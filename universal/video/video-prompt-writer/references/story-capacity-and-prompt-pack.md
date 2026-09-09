@@ -15,7 +15,7 @@
 
 ```text
 delivery_intent: single_clip | story_complete | auto
-segment_duration_cap: 15 | 30
+segment_duration_cap: <正数秒数；服从已确认平台档位>
 locked_story_facts: <不可删减或改写的用户事实、动作、台词、顺序、结尾>
 ```
 
@@ -34,8 +34,8 @@ locked_story_facts: <不可删减或改写的用户事实、动作、台词、�
 
 - locked story facts 全部进入 master story plan；
 - 单段容量不足时自动输出连续 StoryPromptPack；
-- `segment_duration_cap` 根据用户要求选择 15 或 30；未指定时按主 skill 的能力档规则选择，能力未知且澄清后仍未定时暂按 30 规划、标 `conditional`；15 / 30 之外不静默取整，也不进入 v0.8.4 pack 合同，必须要求改用 15 / 30；
-- 用户明确要求“按 15 / 30 秒分段”时，即使故事能放进一个更长单片，也尊重该格式偏好；
+- `segment_duration_cap` 遵从用户指定正数上限；未指定时按主 skill 选择合适规划值。核对实际模式、平台最短/最长时长与离散档，不把低于最大值等同于可提交；能力未知时只作条件式规划，不强制改用 15 / 30；
+- 用户明确要求按指定 cap 分段时，即使故事能放进一个更长单片，也尊重该格式偏好；
 - 每段独立可复制、可生成、可验收，且与前后段有明确状态交接。
 
 ### `auto`
@@ -73,9 +73,7 @@ cannot_split_inside
 
 ### 3.2 估算真实完成时间
 
-容量估算的结果按置信度记录：`high / medium / low`，并写明估算方法。置信度低或估算与目标偏差较大时，不凭估算自动分段；把两案（单片 master 与分段方案）一起交付请用户确认。
-
-估算落在目标容量的灰区（保守估算 ≈ 0.85×cap ~ cap）时，按 `conditional_split` 处理：同时给出单段 master 与连续分段方案，标注 `mode_feasibility: conditional`，由用户选择；不得静默选择其中任一。
+记录容量估算的来源、方法和不确定区间。只有不确定性会改变单片/分段结论时才说明条件或澄清；用户明确指定分段上限时直接按其规划。没有依据时不把某个容量比例当作自动输出两套完整方案的门槛。
 
 容量判断至少覆盖：
 
@@ -112,10 +110,11 @@ else:
 ```text
 StoryPromptPack
   delivery_intent: story_complete
-  segment_duration_cap: 15 | 30
+  segment_duration_cap: <正数秒数；服从已确认平台档位>
   story_duration_estimate:
     duration_or_range
-    verification: verified_human_read | verified_target_tts | unverified_estimate
+    method: <用户时间表 / 实际整段观察 / 动作估算>
+    dialogue_verification: <适用时记录朗读或目标 TTS 的独立证据>
   global_story_anchors
   continuity_ledger
   segments:
@@ -133,7 +132,7 @@ StoryPromptPack
 ### 4.1 段数与时长
 
 - 每个片段满足 `0 < local_duration <= segment_duration_cap`；
-- 每段本地时间轴从 0 开始，最后一个时间码等于该段 `local_duration`；
+- 每段内部本地时间轴从 0 开始并完整覆盖 `local_duration`。正文使用数字时间码时，最后时间码等于本段时长；入口仅支持阶段表达时，按时间轴参考渲染阶段，内部及外部清单保留实际时间；
 - 全局故事时间范围只放在代码块外的片段清单或交接说明中，不把全局时间码混入本地 Prompt Payload；外部清单每段按 `片段 <N>：全局 <开始–结束> / 本地 <X>s / <叙事摘要> / continuity_in：<非空可观察状态> / continuity_out：<非空可观察状态>` 提供可解析交接；
 - 初始容器可按“若干个完整 cap 段 + 最后一个 `0 < Y <= cap` 的余段”规划；
 - 余段短于最小可用时长（可校准初值约 3 秒）时，把最后两个相邻段重切为更均衡的段（如 32 秒 cap=30 → 16+16，而不是 30+2），每段仍满足 `0 < duration <= cap`；平台 capability 还必须给出 `min_duration` 与可用离散时长档，重切结果低于平台最短时长或不在可选档时不得声称可执行；
@@ -169,7 +168,7 @@ StoryPromptPack
 
 ## 五、连续性台账
 
-每个片段必须同时拥有 `continuity_in / continuity_out`。至少核对：
+每个片段必须同时拥有 `continuity_in / continuity_out`。从下列维度核对影响交接的状态，不适用项不填槽，也不据此新增人物、声层或效果：
 
 ```text
 identity_and_appearance
@@ -196,10 +195,9 @@ camera_distance_angle_focus_occlusion_and_handoff
 
 每个片段都是一份独立、完整、可直接粘贴的提示词：
 
-- 复制正文从 `【基础设定】` 开始；
-- 保留 `【基础设定】`、`【氛围与画质】`、`【画面内容】`、`【声音约束】`、`【画面约束】`；
-- 每个时间片保留 `时间段`、`景别/镜头`、`运镜`、`画面内容`、`视效/VFX`、`声音/对白`、`情绪转折` 七字段及固定顺序；
-- 每段复制正文分别按 Unicode 字符计数并包含空格与换行，分别不得超过 5000 字；5000 是单段上限，不是整个 pack 共用预算；
+- 正文形态按 `prompt-structure-framework.md` 选择，保持用户/下游已要求的标题、字段和时间标记；
+- 每段有可恢复的主体、空间、事件顺序与起止状态；不适用的 VFX、声音或情绪字段无需占位；
+- 每段分别遵从主 skill 的字符上限与已确认平台限制，不把上限作为整个 pack 的共用预算；
 - 片段编号、全局故事时间、容量诊断、continuity ledger 摘要放在代码块外；
 - 会影响生成的 continuity in/out 不能只停留在外部诊断，必须嵌入正文；
 - 不在正文出现内部 schema、评分、风险说明或“请与上一段保持一致”等对执行者有意义但对模型不可生成的空话。
@@ -212,7 +210,7 @@ camera_distance_angle_focus_occlusion_and_handoff
 
 - 为视线、呼吸、手指、重心、距离、声线、停顿和对方反应留出可见 / 可听时间；
 - 边界前形成可复现的表演状态，下一段从该状态或有动机的新状态开始；
-- 不因分段把自然表演改成连续口令式动作，不用抽象情绪词替代行为证据。
+- 不因分段把自然表演改成连续口令式动作；保留选定的情绪与表演设计，给关键反应和交接状态充分的行为信息与时间。
 
 ### 镜头与场面调度
 
@@ -223,10 +221,10 @@ camera_distance_angle_focus_occlusion_and_handoff
 
 ### VFX 与物理连续性
 
-- 每个效果仍按来源 → 路径 → 接触 → 峰值 → 衰减 / 残留组织；
+- 按 `vfx-design-dimensions.md` 选择效果实际需要的机制、路径、交互与结果；没有实体接触的光学或图形变化不补碰撞；
 - 跨段时，上一段至少留下下一段可继承的材质、形状、位置、运动方向、光照或环境损伤状态；
-- 不能在段尾让效果凭空消失，也不能在下一段无来源重启；
-- 冲击、破碎、烟尘、液体、火光、能量或其他变化继续服从遮挡、反射、交互光、受力方向、介质扰动和主体反应。
+- 应延续的效果不在段尾无意消失，也不在下一段无来源重启；用户要求消失或恢复时保留该变化；
+- 只继承当前效果实际涉及的遮挡、反射、交互光、受力或介质状态，不给光学、图形效果强加实体碰撞。
 
 ### 声音
 
@@ -236,10 +234,10 @@ camera_distance_angle_focus_occlusion_and_handoff
 
 ## 七之补、能力路由优先级
 
-- **extend 优先于 segment**：已知后端支持延长时，同一叙事单元先走 `extend`；只有故事总容量明确超出可延长范围，或执行流程明确要求分段时，才选 `segment`；
+- 根据用户工作流、连续性输入和当前能力选择 extend 或 segment；已确认可延长且更适合连续动作时可优先延长，不把它作为所有任务的固定优先级；
 - 用户工作流偏好（如“我要 3 条 30s 好拼接”）是合法的覆盖条件，须记录在路由说明中；
 - 能力 unknown 时不得声称原生支持、可延长或可分段，只允许 `conditional` + 生成前核验；
-- 一个 pack 的段数建议不超过 8；超过时优先评估是否应改用更长单段、`video-scripts-writer` 上游脚本设计或项目工作流，而不是无限细分。
+- 段数由完整内容、安全接点与平台容量决定；较长故事需检查交接维护成本，但不因超过固定段数强制调用上游 skill 或删除事件。
 
 ## 八、与 `video-scripts-writer` 的边界
 
@@ -253,17 +251,17 @@ camera_distance_angle_focus_occlusion_and_handoff
 
 可复用的上游字段只有：项目 bible、连续性台账、台词结束时间、给提示词 writer 的画面要点、参考图映射和连贯性注意点。`video-prompt-writer` 消费但重新估算台词时长与单段容量，最终以生成级预算和 pack 级 continuity ledger 为准；若与上游台账冲突，在外部列出差异，不静默篡改上游文档。不得让上游 skill 代替 Prompt Payload 输出，也不得为了使用上游 skill 擅自扩写用户已完成的故事。
 
-`story_shot_planner` 只在用户需要分镜规划表、连续性/风险台账或 handoff prompts、而非直接交付完整视频生成提示词时使用；本技能可消费其已确认的镜头与状态依据，但仍自行完成容量审计、分段和 Prompt Payload 渲染。
+其他上游工具仅在用户已有或明确需要其产物时消费，不路由到未确认可用的技能。上游已确认的镜头和状态仍须在本次容量与交接中复核。
 
 ## 九、交付前检查
 
 - 用户意图是否被正确路由，且 strict single 没有被静默拆段？
 - locked story facts 是否全部且仅一次进入 master plan，没有删除、改写顺序或新增关键情节？
-- 每段是否 `0 < duration <= cap`，本地时间轴从 0 开始且连续覆盖本段？
+- 每段是否 `0 < duration <= cap`，内部本地时间轴从 0 开始且覆盖本段；正文表达是否符合入口能力及用户格式要求，没有把书面时间码当作已确认的执行精度？
 - 全局时间是否只在外部清单，未污染本地时间码？
 - 是否没有空尾段、无意义过短尾段、为凑满时长添加内容或切断不可中断 beat？
 - continuity out 是否与下一段 continuity in 一致，并已把生成相关锚点嵌入正文？
-- 每段是否独立保留完整标题和七字段，正文分别不超过 5000 字？
+- 每段是否独立可复制、保留调用方要求的格式，并分别满足适用字符上限？
 - 片内镜头是否按叙事功能组织，没有因外层分段机械过切？
 - 表演、空间轴、声音桥和 VFX / 物理残留是否跨段可恢复？
 - platform capability、generation mode 与 mode feasibility 是否独立判断，未知能力没有被写成已确认？
